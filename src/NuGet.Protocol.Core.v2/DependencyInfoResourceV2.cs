@@ -1,6 +1,6 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,6 +8,7 @@ using NuGet.Frameworks;
 using NuGet.Packaging.Core;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
+using V3PackageDependency = NuGet.Packaging.Core.PackageDependency;
 
 namespace NuGet.Protocol.Core.v2
 {
@@ -17,25 +18,11 @@ namespace NuGet.Protocol.Core.v2
     public class DependencyInfoResourceV2 : DependencyInfoResource
     {
         private readonly IPackageRepository V2Client;
-        private readonly ConcurrentDictionary<string, VersionRange> _rangeSearched;
-        private readonly ConcurrentDictionary<string, HashSet<PackageDependencyInfo>> _found;
-        private readonly ConcurrentDictionary<string, object> _lockObjsById;
-        private readonly FrameworkReducer _frameworkReducer;
-        private readonly PackageDependencyComparer _packageDepComparer;
-        private readonly IVersionComparer _versionComparer;
-        private readonly IVersionRangeComparer _versionRangeComparer;
-        private static readonly VersionRange EmptyRange = VersionRange.None;
+        private readonly FrameworkReducer _frameworkReducer = new FrameworkReducer();
 
         public DependencyInfoResourceV2(IPackageRepository repo)
         {
             V2Client = repo;
-            _rangeSearched = new ConcurrentDictionary<string, VersionRange>(StringComparer.OrdinalIgnoreCase);
-            _found = new ConcurrentDictionary<string, HashSet<PackageDependencyInfo>>(StringComparer.OrdinalIgnoreCase);
-            _lockObjsById = new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-            _frameworkReducer = new FrameworkReducer();
-            _packageDepComparer = new PackageDependencyComparer();
-            _versionComparer = VersionComparer.VersionRelease;
-            _versionRangeComparer = VersionRangeComparer.VersionRelease;
         }
 
         public DependencyInfoResourceV2(V2Resource resource)
@@ -44,179 +31,132 @@ namespace NuGet.Protocol.Core.v2
 
         }
 
-        public override async Task<IEnumerable<PackageDependencyInfo>> ResolvePackages(IEnumerable<string> packageIds, Frameworks.NuGetFramework projectFramework, bool includePrerelease, CancellationToken token)
+        /// <summary>
+        /// Retrieve dependency info for a single package.
+        /// </summary>
+        /// <param name="package">package id and version</param>
+        /// <param name="projectFramework">project target framework. This is used for finding the dependency group</param>
+        /// <param name="token">cancellation token</param>
+        /// <returns>Returns dependency info for the given package if it exists. If the package is not found null is returned.</returns>
+        public override async Task<PackageDependencyInfo> ResolvePackage(PackageIdentity package, NuGetFramework projectFramework, CancellationToken token)
         {
-            if (packageIds == null)
+            if (package == null)
             {
-                throw new ArgumentNullException("packageIds");
+                throw new ArgumentNullException(null, nameof(package));
             }
 
-            IEnumerable<PackageIdentity> packages = packageIds.Select(s => new PackageIdentity(s, null));
-
-            return await ResolvePackages(packages, projectFramework, includePrerelease, token);
-        }
-
-        /// <summary>
-        /// Dependency walk
-        /// </summary>
-        public override async Task<IEnumerable<PackageDependencyInfo>> ResolvePackages(IEnumerable<PackageIdentity> packages, NuGetFramework projectFramework, bool includePrerelease, CancellationToken token)
-        {
             if (projectFramework == null)
             {
-                throw new ArgumentNullException("projectFramework");
+                throw new ArgumentNullException(nameof(projectFramework));
             }
 
-            if (packages == null)
+            PackageDependencyInfo result = null;
+
+            SemanticVersion legacyVersion = null;
+
+            // attempt to parse the semver into semver 1.0.0, if this fails then the v2 client would
+            // not be able to find it anyways and we should return null
+            if (SemanticVersion.TryParse(package.Version.ToString(), out legacyVersion))
             {
-                throw new ArgumentNullException("packages");
+                try
+                {
+                    // Retrieve all packages
+                    var repoPackage = V2Client.FindPackage(package.Id, legacyVersion);
+
+                    if (repoPackage != null)
+                    {
+                        // convert to v3 type
+                        result = CreateDependencyInfo(repoPackage, projectFramework);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Wrap exceptions coming from the server with a user friendly message
+                    string error = String.Format(CultureInfo.CurrentUICulture, Strings.Protocol_PackageMetadataError, package, V2Client.Source);
+
+                    throw new NuGetProtocolException(error, ex);
+                }
             }
 
-            HashSet<PackageDependencyInfo> results = new HashSet<PackageDependencyInfo>(PackageIdentityComparer.Default);
-
-            foreach (PackageIdentity package in packages)
-            {
-                VersionRange range = package.HasVersion ? new VersionRange(package.Version, true, package.Version, true) : VersionRange.All;
-
-                var target = new NuGet.Packaging.Core.PackageDependency(package.Id, range);
-
-                results.UnionWith(await Seek(target, projectFramework, includePrerelease, Enumerable.Empty<string>(), token));
-            }
-
-            // pre-release should not be in the final set, but filter again just to be sure
-            return results.Where(e => includePrerelease || !e.Version.IsPrerelease);
+            return result;
         }
 
         /// <summary>
-        /// Recursive package dependency info gather
+        /// Retrieve dependency info for a single package.
         /// </summary>
-        private async Task<IEnumerable<PackageDependencyInfo>> Seek(NuGet.Packaging.Core.PackageDependency target, NuGetFramework projectFramework, bool includePrerelease, IEnumerable<string> parents, CancellationToken token)
+        /// <param name="package">package id and version</param>
+        /// <param name="projectFramework">project target framework. This is used for finding the dependency group</param>
+        /// <param name="token">cancellation token</param>
+        /// <returns>Returns dependency info for the given package if it exists. If the package is not found null is returned.</returns>
+        public override async Task<IEnumerable<PackageDependencyInfo>> ResolvePackages(string packageId, NuGetFramework projectFramework, CancellationToken token)
         {
-            // check if we are cancelled
-            token.ThrowIfCancellationRequested();
-
-            List<PackageDependencyInfo> results = new List<PackageDependencyInfo>();
-
-            // circular dependency check protection
-            if (!parents.Contains(target.Id, StringComparer.OrdinalIgnoreCase))
+            if (packageId == null)
             {
-                await Ensure(target, projectFramework, includePrerelease, token);
-
-                var packages = Get(target, includePrerelease);
-
-                results.AddRange(packages);
-
-                // combine all version ranges found for an id into a single range
-                var toSeek = packages.SelectMany(g => g.Dependencies).GroupBy(d => d.Id, StringComparer.OrdinalIgnoreCase)
-                   .OrderBy(d => d.Key)
-                   .Select(g => new NuGet.Packaging.Core.PackageDependency(g.Key, VersionRange.Combine(g.Select(d => d.VersionRange))));
-
-                // recurse
-                Stack<Task<IEnumerable<PackageDependencyInfo>>> tasks = new Stack<Task<IEnumerable<PackageDependencyInfo>>>();
-
-                foreach (NuGet.Packaging.Core.PackageDependency dep in toSeek)
-                {
-                    // run tasks on another thread
-                    var task = Task.Run(async () => await Seek(dep, projectFramework, includePrerelease, parents.Concat(new string[] { target.Id }), token));
-                    tasks.Push(task);
-                }
-
-                // add child dep results
-                foreach (var task in tasks)
-                {
-                    results.AddRange(await task);
-                }
+                throw new ArgumentNullException(nameof(packageId));
             }
 
-            return results;
-        }
-
-        // Thread safe retrieval of fetched packages for the target only, no child dependencies
-        private IEnumerable<PackageDependencyInfo> Get(NuGet.Packaging.Core.PackageDependency target, bool includePrerelease)
-        {
-            HashSet<PackageDependencyInfo> packages = null;
-            if (!_found.TryGetValue(target.Id, out packages))
+            if (projectFramework == null)
             {
-                return Enumerable.Empty<PackageDependencyInfo>();
+                throw new ArgumentNullException(nameof(projectFramework));
             }
-            else
-            {
-                object lockObj = _lockObjsById.GetOrAdd(target.Id, new object());
 
-                // lock per package Id
-                lock (lockObj)
-                {
-                    return packages.Where(p => includePrerelease || !p.Version.IsPrerelease).Where(p => target.VersionRange.Satisfies(p.Version));
-                }
+            try
+            {
+                // Retrieve all packages
+                var repoPackages = V2Client.FindPackagesById(packageId);
+
+                // Convert from v2 to v3 types and enumerate the list to finish all server requests before returning
+                return repoPackages.Select(p => CreateDependencyInfo(p, projectFramework)).ToArray();
+            }
+            catch (Exception ex)
+            {
+                // Wrap exceptions coming from the server with a user friendly message
+                string error = String.Format(CultureInfo.CurrentUICulture, Strings.Protocol_PackageMetadataError, packageId, V2Client.Source);
+
+                throw new NuGetProtocolException(error, ex);
             }
         }
 
-        // Thread safe fetch for the target only, no child dependencies
-        private async Task Ensure(NuGet.Packaging.Core.PackageDependency target, NuGetFramework projectFramework, bool includePrerelease, CancellationToken token)
-        {
-            object lockObj = _lockObjsById.GetOrAdd(target.Id, new object());
-
-            // lock per package Id
-            lock (lockObj)
-            {
-                VersionRange alreadySearched = null;
-
-                // Fetch by range is no longer supported, all packages will be fetched
-                if (!_rangeSearched.TryGetValue(target.Id, out alreadySearched))
-                {
-                    // server search
-                    IEnumerable<IPackage> repoPackages = V2Client.FindPackagesById(target.Id);
-
-                    _rangeSearched.AddOrUpdate(target.Id, VersionRange.All, (k, v) => VersionRange.All);
-
-                    HashSet<PackageDependencyInfo> foundPackages = null;
-
-                    // add everything to found
-                    if (!_found.TryGetValue(target.Id, out foundPackages))
-                    {
-                        foundPackages = new HashSet<PackageDependencyInfo>(PackageIdentity.Comparer);
-                        _found.TryAdd(target.Id, foundPackages);
-                    }
-
-                    // add current packages to found
-                    IEnumerable<PackageDependencyInfo> packageVersions = repoPackages.Select(p => CreateDependencyInfo(p, projectFramework));
-                    foundPackages.UnionWith(packageVersions);
-                }
-            }
-        }
-
+        /// <summary>
+        ///  Convert a V2 IPackage into a V3 PackageDependencyInfo
+        /// </summary>
         private PackageDependencyInfo CreateDependencyInfo(IPackage packageVersion, NuGetFramework projectFramework)
         {
-            IEnumerable<NuGet.Packaging.Core.PackageDependency> deps = Enumerable.Empty<NuGet.Packaging.Core.PackageDependency>();
+            IEnumerable<V3PackageDependency> deps = Enumerable.Empty<NuGet.Packaging.Core.PackageDependency>();
 
             PackageIdentity identity = new PackageIdentity(packageVersion.Id, NuGetVersion.Parse(packageVersion.Version.ToString()));
             if (packageVersion.DependencySets != null && packageVersion.DependencySets.Count() > 0)
             {
-                NuGetFramework nearestFramework = _frameworkReducer.GetNearest(projectFramework, packageVersion.DependencySets.Select(e => GetNuGetFramework(e)));
+                // Take only the dependency group valid for the project TFM
+                NuGetFramework nearestFramework = _frameworkReducer.GetNearest(projectFramework, packageVersion.DependencySets.Select(e => GetFramework(e)));
 
                 if (nearestFramework != null)
                 {
-                    var matches = packageVersion.DependencySets.Where(e => (GetNuGetFramework(e).Equals(nearestFramework)));
-                    IEnumerable<PackageDependency> dependencies = matches.Single().Dependencies;
-                    deps = dependencies.Select(item => GetNuGetPackagingCorePackageDependency(item));
+                    var matches = packageVersion.DependencySets.Where(e => (GetFramework(e).Equals(nearestFramework)));
+                    IEnumerable<PackageDependency> dependencies = matches.First().Dependencies;
+                    deps = dependencies.Select(item => GetPackageDependency(item));
                 }
             }
 
             return new PackageDependencyInfo(identity, deps);
         }
 
-        private NuGetFramework GetNuGetFramework(PackageDependencySet dependencySet)
+        private static NuGetFramework GetFramework(PackageDependencySet dependencySet)
         {
             NuGetFramework fxName = NuGetFramework.AnyFramework;
             if (dependencySet.TargetFramework != null)
+            {
                 fxName = NuGetFramework.Parse(dependencySet.TargetFramework.FullName);
+            }
+
             return fxName;
         }
 
-        private static NuGet.Packaging.Core.PackageDependency GetNuGetPackagingCorePackageDependency(PackageDependency dependency)
+        private static V3PackageDependency GetPackageDependency(PackageDependency dependency)
         {
             string id = dependency.Id;
             VersionRange versionRange = dependency.VersionSpec == null ? null : VersionRange.Parse(dependency.VersionSpec.ToString());
-            return new NuGet.Packaging.Core.PackageDependency(id, versionRange);
+            return new V3PackageDependency(id, versionRange);
         }
     }
 }
