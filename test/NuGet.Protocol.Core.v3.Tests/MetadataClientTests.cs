@@ -28,7 +28,7 @@ namespace Protocol.Core.v3.Tests
             var resource = await repo.GetResourceAsync<DependencyInfoResource>();
 
             // Act
-            var results = await resource.ResolvePackages("deepequal", NuGetFramework.Parse("net45"), CancellationToken.None);
+            var results = await resource.ResolvePackages("deepequal", CancellationToken.None);
 
             var target = results.Where(p => p.Version == NuGetVersion.Parse("1.4.0")).Single();
 
@@ -53,7 +53,7 @@ namespace Protocol.Core.v3.Tests
             var package = new PackageIdentity("deepequal", NuGetVersion.Parse("0.9.0"));
 
             // Act
-            var result = await resource.ResolvePackage(package, NuGetFramework.Parse("net45"), CancellationToken.None);
+            var result = await resource.ResolvePackage(package, CancellationToken.None);
 
             // Assert
             Assert.Equal(result.Version, package.Version);
@@ -93,7 +93,7 @@ namespace Protocol.Core.v3.Tests
             var resource = await repo.GetResourceAsync<DependencyInfoResource>();
 
             // Act
-            var results = await resource.ResolvePackages("microsoft.owin", NuGetFramework.Parse("net45"), CancellationToken.None);
+            var results = await resource.ResolvePackages("microsoft.owin", CancellationToken.None);
 
             // Assert
             Assert.Equal(14, results.Count());
@@ -114,7 +114,7 @@ namespace Protocol.Core.v3.Tests
             var resource = await repo.GetResourceAsync<DependencyInfoResource>();
 
             // Act
-            var results = await resource.ResolvePackages("owin", NuGetFramework.Parse("net45"), CancellationToken.None);
+            var results = await resource.ResolvePackages("owin", CancellationToken.None);
 
             // Assert
             Assert.Equal(0, results.Count());
@@ -136,7 +136,7 @@ namespace Protocol.Core.v3.Tests
             var package = new PackageIdentity("owin", NuGetVersion.Parse("1.0.0"));
 
             // Act
-            var result = await resource.ResolvePackage(package, NuGetFramework.Parse("net45"), CancellationToken.None);
+            var result = await resource.ResolvePackage(package, CancellationToken.None);
 
             // Assert
             Assert.Null(result);

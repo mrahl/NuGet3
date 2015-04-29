@@ -1,13 +1,11 @@
-﻿using Newtonsoft.Json.Linq;
-using NuGet.Versioning;
-using System;
-using System.Collections.Generic;
+﻿using System;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
-using System.Xml;
+using Newtonsoft.Json.Linq;
+using NuGet.Versioning;
 
-namespace NuGet.Protocol.Core.v3.DependencyInfo
+namespace NuGet.Protocol.Core.v3.MetadataClient
 {
     internal static class Utils
     {

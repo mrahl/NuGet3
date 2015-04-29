@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NuGet.Frameworks;
+using NuGet.Packaging;
 using NuGet.Packaging.Core;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
@@ -35,24 +36,18 @@ namespace NuGet.Protocol.Core.v2
         /// Retrieve dependency info for a single package.
         /// </summary>
         /// <param name="package">package id and version</param>
-        /// <param name="projectFramework">project target framework. This is used for finding the dependency group</param>
         /// <param name="token">cancellation token</param>
         /// <returns>Returns dependency info for the given package if it exists. If the package is not found null is returned.</returns>
-        public override async Task<PackageDependencyInfo> ResolvePackage(PackageIdentity package, NuGetFramework projectFramework, CancellationToken token)
+        public override async Task<DependencyInfo> ResolvePackage(PackageIdentity package, CancellationToken token)
         {
             if (package == null)
             {
                 throw new ArgumentNullException(null, nameof(package));
             }
 
-            if (projectFramework == null)
-            {
-                throw new ArgumentNullException(nameof(projectFramework));
-            }
+            DependencyInfo result = null;
 
-            PackageDependencyInfo result = null;
-
-            SemanticVersion legacyVersion = null;
+            SemanticVersion legacyVersion;
 
             // attempt to parse the semver into semver 1.0.0, if this fails then the v2 client would
             // not be able to find it anyways and we should return null
@@ -66,7 +61,7 @@ namespace NuGet.Protocol.Core.v2
                     if (repoPackage != null)
                     {
                         // convert to v3 type
-                        result = CreateDependencyInfo(repoPackage, projectFramework);
+                        result = CreateDependencyInfo(repoPackage);
                     }
                 }
                 catch (Exception ex)
@@ -85,19 +80,13 @@ namespace NuGet.Protocol.Core.v2
         /// Retrieve dependency info for a single package.
         /// </summary>
         /// <param name="package">package id and version</param>
-        /// <param name="projectFramework">project target framework. This is used for finding the dependency group</param>
         /// <param name="token">cancellation token</param>
         /// <returns>Returns dependency info for the given package if it exists. If the package is not found null is returned.</returns>
-        public override async Task<IEnumerable<PackageDependencyInfo>> ResolvePackages(string packageId, NuGetFramework projectFramework, CancellationToken token)
+        public override Task<IEnumerable<DependencyInfo>> ResolvePackages(string packageId, CancellationToken token)
         {
             if (packageId == null)
             {
                 throw new ArgumentNullException(nameof(packageId));
-            }
-
-            if (projectFramework == null)
-            {
-                throw new ArgumentNullException(nameof(projectFramework));
             }
 
             try
@@ -106,7 +95,7 @@ namespace NuGet.Protocol.Core.v2
                 var repoPackages = V2Client.FindPackagesById(packageId);
 
                 // Convert from v2 to v3 types and enumerate the list to finish all server requests before returning
-                return repoPackages.Select(p => CreateDependencyInfo(p, projectFramework)).ToArray();
+                return Task.FromResult<IEnumerable<DependencyInfo>>(repoPackages.Select(CreateDependencyInfo).ToList());
             }
             catch (Exception ex)
             {
@@ -118,27 +107,22 @@ namespace NuGet.Protocol.Core.v2
         }
 
         /// <summary>
-        ///  Convert a V2 IPackage into a V3 PackageDependencyInfo
+        ///  Convert a V2 IPackage into V3 PackageDependencyGroups
         /// </summary>
-        private PackageDependencyInfo CreateDependencyInfo(IPackage packageVersion, NuGetFramework projectFramework)
+        private DependencyInfo CreateDependencyInfo(IPackage packageVersion)
         {
-            IEnumerable<V3PackageDependency> deps = Enumerable.Empty<NuGet.Packaging.Core.PackageDependency>();
+            var dependencyGroups = new List<PackageDependencyGroup>();
 
             PackageIdentity identity = new PackageIdentity(packageVersion.Id, NuGetVersion.Parse(packageVersion.Version.ToString()));
-            if (packageVersion.DependencySets != null && packageVersion.DependencySets.Count() > 0)
+            if (packageVersion.DependencySets != null)
             {
-                // Take only the dependency group valid for the project TFM
-                NuGetFramework nearestFramework = _frameworkReducer.GetNearest(projectFramework, packageVersion.DependencySets.Select(e => GetFramework(e)));
-
-                if (nearestFramework != null)
+                foreach (var group in packageVersion.DependencySets)
                 {
-                    var matches = packageVersion.DependencySets.Where(e => (GetFramework(e).Equals(nearestFramework)));
-                    IEnumerable<PackageDependency> dependencies = matches.First().Dependencies;
-                    deps = dependencies.Select(item => GetPackageDependency(item));
+                    dependencyGroups.Add(new PackageDependencyGroup(GetFramework(group), group.Dependencies.Select(GetPackageDependency)));
                 }
             }
 
-            return new PackageDependencyInfo(identity, deps);
+            return new DependencyInfo(identity, dependencyGroups);
         }
 
         private static NuGetFramework GetFramework(PackageDependencySet dependencySet)

@@ -23,13 +23,14 @@ namespace NuGet.Protocol.Core.v2.Tests
             var dep2 = new PackageIdentity("xunit.assert", NuGetVersion.Parse("2.1.0-beta1-build2945"));
 
             // Act
-            var result = await resource.ResolvePackage(package, NuGetFramework.Parse("net45"), CancellationToken.None);
+            var result = await resource.ResolvePackage(package, CancellationToken.None);
+            var dependencyGroup = result.DependencyGroups.Single(g => g.TargetFramework.GetShortFolderName() == "net45");
 
             // Assert
-            Assert.Equal(package, result, PackageIdentity.Comparer);
-            Assert.Equal(2, result.Dependencies.Count());
-            Assert.Equal("[2.1.0-beta1-build2945, 2.1.0-beta1-build2945]", result.Dependencies.Single(dep => dep.Id == "xunit.core").VersionRange.ToNormalizedString());
-            Assert.Equal("[2.1.0-beta1-build2945, 2.1.0-beta1-build2945]", result.Dependencies.Single(dep => dep.Id == "xunit.assert").VersionRange.ToNormalizedString());
+            Assert.Equal(package, result.Identity, PackageIdentity.Comparer);
+            Assert.Equal(2, dependencyGroup.Packages.Count());
+            Assert.Equal("[2.1.0-beta1-build2945, 2.1.0-beta1-build2945]", dependencyGroup.Packages.Single(dep => dep.Id == "xunit.core").VersionRange.ToNormalizedString());
+            Assert.Equal("[2.1.0-beta1-build2945, 2.1.0-beta1-build2945]", dependencyGroup.Packages.Single(dep => dep.Id == "xunit.assert").VersionRange.ToNormalizedString());
         }
 
         [Fact]
@@ -45,7 +46,7 @@ namespace NuGet.Protocol.Core.v2.Tests
             var filterRange = new VersionRange(NuGetVersion.Parse("2.0.0-rc4-build2924"), true, NuGetVersion.Parse("2.1.0-beta1-build2945"), true);
 
             // Act
-            var results = await resource.ResolvePackages("xunit", NuGetFramework.Parse("net45"), CancellationToken.None);
+            var results = await resource.ResolvePackages("xunit", CancellationToken.None);
 
             var filtered = results.Where(result => filterRange.Satisfies(result.Version));
 
@@ -68,7 +69,7 @@ namespace NuGet.Protocol.Core.v2.Tests
             var package = new PackageIdentity("nuget.core", NuGetVersion.Parse("1.0.0-notfound"));
 
             // Act
-            var result = await resource.ResolvePackage(package, NuGetFramework.Parse("net45"), CancellationToken.None);
+            var result = await resource.ResolvePackage(package, CancellationToken.None);
 
             // Assert
             Assert.Null(result);
@@ -84,7 +85,7 @@ namespace NuGet.Protocol.Core.v2.Tests
             var package = new PackageIdentity("nuget.notfound", NuGetVersion.Parse("1.0.0-blah"));
 
             // Act
-            var results = await resource.ResolvePackages("nuget.notfound", NuGetFramework.Parse("net45"), CancellationToken.None);
+            var results = await resource.ResolvePackages("nuget.notfound", CancellationToken.None);
 
             // Assert
             Assert.Equal(0, results.Count());
