@@ -19,8 +19,7 @@ namespace NuGet.Commands
         internal static async Task InstallFromStream(
             Stream stream,
             LibraryIdentity library,
-            string packagesDirectory,
-            ILogger log)
+            string packagesDirectory)
         {
             var packagePathResolver = new DefaultPackagePathResolver(packagesDirectory);
 
@@ -38,8 +37,6 @@ namespace NuGet.Commands
                 // waiting on this lock don't need to install it again.
                 if (createdNewLock && !File.Exists(targetNupkg))
                 {
-                    log.LogInformation($"Installing {library.Name} {library.Version}");
-
                     Directory.CreateDirectory(targetPath);
                     using (var nupkgStream = new FileStream(
                         targetNupkg,

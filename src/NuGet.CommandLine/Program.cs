@@ -86,8 +86,9 @@ namespace NuGet.CommandLine
                     // Run the restore
                     var request = new RestoreRequest(
                         project,
+                        packagesDir,
                         sources.Values.Select(s => new PackageSource(s)),
-                        packagesDir);
+                        Enumerable.Empty<ExternalProjectReference>());
                     if (parallel.HasValue())
                     {
                         int parallelDegree;
@@ -107,6 +108,7 @@ namespace NuGet.CommandLine
                     {
                         _log.LogInformation($"Running restore with {request.MaxDegreeOfConcurrency} concurrent jobs");
                     }
+
                     var command = new RestoreCommand(loggerFactory);
                     var sw = Stopwatch.StartNew();
                     var result = await command.ExecuteAsync(request);
